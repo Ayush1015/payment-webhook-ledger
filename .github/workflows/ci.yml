@@ -1,0 +1,33 @@
+name: checks
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ledger
+          POSTGRES_PASSWORD: ledger
+          POSTGRES_DB: ledger_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ledger -d ledger_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - run: npm test
+      - run: npm test
+        env:
+          TEST_DATABASE_URL: postgres://ledger:ledger@localhost:5432/ledger_test
+      - run: docker compose config --quiet
+        env:
+          WEBHOOK_SECRET: ci-demo-secret-never-used-in-production
+          ADMIN_KEY: ci-demo-admin-key-never-used-in-production
