@@ -1,0 +1,21 @@
+import { beforeEach, afterEach, it, expect } from 'vitest';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { Database } from '../src/db.js';
+import { database } from './helpers.js';
+import { createApp } from '../src/app.js';
+import { signature } from '../src/signature.js';
+let db:Database; let server:Server; let url:string;
+const secret='local-test-secret-longer-than-24'; const admin='local-test-admin-longer-than-24'; const now=1790750000;
+const event={event_id:'evt_http',payment_id:'pay_http',amount_minor:9900,currency:'INR',status:'captured',occurred_at:'2026-09-01T00:00:00Z'};
+beforeEach(async()=>{db=await database(); server=createApp(db,{webhookSecret:secret,adminKey:admin,graceSeconds:0,clock:()=>now*1000}).listen(0,'127.0.0.1'); await new Promise<void>(r=>server.on('listening',r)); url=`http://127.0.0.1:${(server.address() as AddressInfo).port}`;},30000);
+afterEach(async()=>{await new Promise<void>((r,j)=>server.close(e=>e?j(e):r())); await db.close();});
+function send(body=JSON.stringify(event),key='key_http',signed=true) {return fetch(`${url}/webhooks/payments`,{method:'POST',body,headers:{'content-type':'application/json','idempotency-key':key,...(signed?{'x-webhook-signature':`t=${now},v1=${signature(Buffer.from(body),secret,now)}`}:{})}});}
+it('health checks database',async()=>expect((await fetch(`${url}/health`)).status).toBe(200));
+it('returns 201 then 200 for authentic duplicate',async()=>{expect((await send()).status).toBe(201); expect((await send()).status).toBe(200);});
+it('rejects unauthenticated traffic without persisting',async()=>{expect((await send(undefined,undefined,false)).status).toBe(401); expect((await db.query('SELECT * FROM webhook_events')).rows).toHaveLength(0);});
+it('returns 409 on conflicting retry',async()=>{await send(); expect((await send(JSON.stringify({...event,amount_minor:1}))).status).toBe(409);});
+it('rejects malformed JSON and missing key',async()=>{expect((await send('{')).status).toBe(400); expect((await send(undefined,'')).status).toBe(400);});
+it('rejects invalid event',async()=>expect((await send(JSON.stringify({...event,currency:'inr'}))).status).toBe(400));
+it('rejects oversized request',async()=>expect((await send('x'.repeat(65537))).status).toBe(413));
+it('admin endpoints require separate key',async()=>{expect((await fetch(`${url}/admin/reconcile`,{method:'POST'})).status).toBe(401); const r=await fetch(`${url}/admin/reconcile`,{method:'POST',headers:{'x-admin-key':admin}}); expect(r.status).toBe(200); const result=await r.json() as {id:string}; expect((await fetch(`${url}/admin/runs/${result.id}`,{headers:{'x-admin-key':admin}})).status).toBe(200);});
